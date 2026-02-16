@@ -35,11 +35,11 @@ int main(int argc, char** argv) {
                 double dy = nbs.bodies[j].x[1] - nbs.bodies[i].x[1];
                 double dz = nbs.bodies[j].x[2] - nbs.bodies[i].x[2];
 
-                double distSqr = dx*dx + dy*dy + dz*dz;
-                double dist = std::sqrt(distSqr);
-                double distCubed = distSqr * dist;
+                double distanceSqr = dx*dx + dy*dy + dz*dz;
+                double distance = std::sqrt(distanceSqr);
+                double distanceCubed = distanceSqr * distance;
 
-                double F = (nbs.bodies[i].mass * nbs.bodies[j].mass) / distCubed;
+                double F = (nbs.bodies[i].mass * nbs.bodies[j].mass) / distanceCubed;
 
                 forceX[i] += F * dx;
                 forceY[i] += F * dy;

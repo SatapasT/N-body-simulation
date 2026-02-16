@@ -40,9 +40,9 @@ def create_particles(N, min_mass, max_mass, scenario):
             xPos = random.random()
             yPos = random.random()
             zPos = random.random()
-            dist = math.sqrt((xPos - 0.5)**2 + (yPos - 0.5)**2 + (zPos - 0.5)**2)
-            if dist < 0.1:
-                factor = 1.0 / (dist + 1e-5)
+            distance = math.sqrt((xPos - 0.5)**2 + (yPos - 0.5)**2 + (zPos - 0.5)**2)
+            if distance < 0.1:
+                factor = 1.0 / (distance + 1e-5)
                 vx = (xPos - 0.5) * factor
                 vy = (yPos - 0.5) * factor
                 vz = (zPos - 0.5) * factor
