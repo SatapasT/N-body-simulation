@@ -17,22 +17,23 @@ void directoryExists(const std::string &dirPath) {
   }
 }
 
-static void mergeBodies(std::vector<Body> &bodies, int i, int j) {
+static inline bool isAlive(const Body& b) {
+  return b.mass > 0.0;
+}
+
+static void mergeBodiesInPlace(std::vector<Body>& bodies, int i, int j) {
   const double mi = bodies[i].mass;
   const double mj = bodies[j].mass;
-  const double m = mi + mj;
+  const double m  = mi + mj;
 
-  bodies[i].x[0] = (mi * bodies[i].x[0] + mj * bodies[j].x[0]) / m;
-  bodies[i].x[1] = (mi * bodies[i].x[1] + mj * bodies[j].x[1]) / m;
-  bodies[i].x[2] = (mi * bodies[i].x[2] + mj * bodies[j].x[2]) / m;
-
-  bodies[i].v[0] = (mi * bodies[i].v[0] + mj * bodies[j].v[0]) / m;
-  bodies[i].v[1] = (mi * bodies[i].v[1] + mj * bodies[j].v[1]) / m;
-  bodies[i].v[2] = (mi * bodies[i].v[2] + mj * bodies[j].v[2]) / m;
-
+  for (int d = 0; d < 3; ++d) {
+    bodies[i].x[d] = (mi * bodies[i].x[d] + mj * bodies[j].x[d]) / m;
+    bodies[i].v[d] = (mi * bodies[i].v[d] + mj * bodies[j].v[d]) / m;
+  }
   bodies[i].mass = m;
 
-  bodies.erase(bodies.begin() + j);
+  bodies[j].mass = 0.0;
+  bodies[j].v[0] = bodies[j].v[1] = bodies[j].v[2] = 0.0;
 }
 
 int main(int argc, char **argv) {
@@ -54,13 +55,20 @@ int main(int argc, char **argv) {
   double t = 0.0;
   double nextPlotTime = nbs.tPlotDelta;
 
-  const int N = static_cast<int>(nbs.bodies.size());
+  const int N0 = static_cast<int>(nbs.bodies.size());
+
+  long long totalMerges = 0;
+
+  auto countAlive = [&](const std::vector<Body>& bodies) {
+    int alive = 0;
+    for (const auto& b : bodies) if (b.mass > 0.0) ++alive;
+    return alive;
+  };
 
   while (t < nbs.tFinal) {
-    const int nCurrent = static_cast<int>(nbs.bodies.size());
-    std::vector<double> forceX(nCurrent, 0.0);
-    std::vector<double> forceY(nCurrent, 0.0);
-    std::vector<double> forceZ(nCurrent, 0.0);
+    std::vector<double> forceX(N0, 0.0);
+    std::vector<double> forceY(N0, 0.0);
+    std::vector<double> forceZ(N0, 0.0);
 
     const double G = 1;
     const double eps2 = 1e-12;
@@ -68,79 +76,86 @@ int main(int argc, char **argv) {
     // ===============================
     // Compute Forces + Sum Forces
     // ===============================
-    for (int i = 0; i < nCurrent; ++i) {
-      for (int j = i + 1; j < nCurrent; ++j) {
+    for (int i = 0; i < N0; ++i) {
+      if (!isAlive(nbs.bodies[i])) continue;
+
+      for (int j = i + 1; j < N0; ++j) {
+        if (!isAlive(nbs.bodies[j])) continue;
+
         const double dx = nbs.bodies[j].x[0] - nbs.bodies[i].x[0];
         const double dy = nbs.bodies[j].x[1] - nbs.bodies[i].x[1];
         const double dz = nbs.bodies[j].x[2] - nbs.bodies[i].x[2];
 
-        const double r2 = (dx * dx) + (dy * dy) + (dz * dz) + eps2;
+        const double r2 = dx*dx + dy*dy + dz*dz + eps2;
         const double invR = 1.0 / std::sqrt(r2);
         const double invR3 = invR * invR * invR;
 
         const double mi = nbs.bodies[i].mass;
         const double mj = nbs.bodies[j].mass;
+
         const double factor = G * mi * mj * invR3;
 
         const double fx = factor * dx;
         const double fy = factor * dy;
         const double fz = factor * dz;
 
-        forceX[i] += fx;
-        forceY[i] += fy;
-        forceZ[i] += fz;
-        forceX[j] -= fx;
-        forceY[j] -= fy;
-        forceZ[j] -= fz;
+        forceX[i] += fx; forceY[i] += fy; forceZ[i] += fz;
+        forceX[j] -= fx; forceY[j] -= fy; forceZ[j] -= fz;
       }
     }
 
     // ===============================
     // Update velocities and Positions
     // ===============================
-    for (int i = 0; i < nCurrent; ++i) {
+    for (int i = 0; i < N0; ++i) {
+      if (!isAlive(nbs.bodies[i])) continue;
+
       const double invMass = 1.0 / nbs.bodies[i].mass;
 
-      // save old velocity for position update
+      // store old velocity (needed for explicit Euler position update)
       const double v0x = nbs.bodies[i].v[0];
       const double v0y = nbs.bodies[i].v[1];
       const double v0z = nbs.bodies[i].v[2];
 
-      // v^{n+1} = v^n + (F^n/m)*dt
+      // v^{n+1} = v^n + (F^n/m) dt
       nbs.bodies[i].v[0] = v0x + nbs.dt * forceX[i] * invMass;
       nbs.bodies[i].v[1] = v0y + nbs.dt * forceY[i] * invMass;
       nbs.bodies[i].v[2] = v0z + nbs.dt * forceZ[i] * invMass;
 
-      // x^{n+1} = x^n + v^n*dt  (explicit Euler position update)
-      nbs.bodies[i].x[0] += nbs.dt * nbs.bodies[i].v[0];
-      nbs.bodies[i].x[1] += nbs.dt * nbs.bodies[i].v[1];
-      nbs.bodies[i].x[2] += nbs.dt * nbs.bodies[i].v[2];
+      // r^{n+1} = r^n + v^n dt   (USE OLD v)
+      nbs.bodies[i].x[0] += nbs.dt * v0x;
+      nbs.bodies[i].x[1] += nbs.dt * v0y;
+      nbs.bodies[i].x[2] += nbs.dt * v0z;
     }
 
     // ===============================
-    // Collision Handling
+    // Collision Handling (stable indices; no erase)
     // ===============================
-    if (nbs.bodies.size() >= 2) {
-      const double C = 1e-2 / static_cast<double>(N);
+    {
+      const double C = 1e-2 / static_cast<double>(N0);
 
-      bool mergeable = true;
-      while (mergeable) {
-        mergeable = false;
+      bool merged = true;
+      while (merged) {
+        merged = false;
 
-        const int nNow = static_cast<int>(nbs.bodies.size());
-        for (int i = 0; i < nNow && !mergeable; ++i) {
-          for (int j = i + 1; j < nNow && !mergeable; ++j) {
+        for (int i = 0; i < N0 && !merged; ++i) {
+          if (!isAlive(nbs.bodies[i])) continue;
+
+          for (int j = i + 1; j < N0 && !merged; ++j) {
+            if (!isAlive(nbs.bodies[j])) continue;
+
             const double dx = nbs.bodies[j].x[0] - nbs.bodies[i].x[0];
             const double dy = nbs.bodies[j].x[1] - nbs.bodies[i].x[1];
             const double dz = nbs.bodies[j].x[2] - nbs.bodies[i].x[2];
 
-            const double distanceSqr = dx * dx + dy * dy + dz * dz;
+            const double dist2 = dx*dx + dy*dy + dz*dz;
             const double thresh = C * (nbs.bodies[i].mass + nbs.bodies[j].mass);
             const double thresh2 = thresh * thresh;
 
-            if (distanceSqr <= thresh2) {
-              mergeBodies(nbs.bodies, i, j);
-              mergeable = true;
+            if (dist2 <= thresh2) {
+              mergeBodiesInPlace(nbs.bodies, i, j);
+              ++totalMerges;
+              merged = true;
             }
           }
         }
@@ -154,12 +169,14 @@ int main(int argc, char **argv) {
       writeVTKSnapshot(nbs, snapshotCounter);
       addSnapshotToPVD(snapshotCounter);
       nextPlotTime += nbs.tPlotDelta;
-      std::cout << "Plot next snapshot" << ",\t t=" << t << ",\t dt=" << nbs.dt
-                << ",\t N=" << nbs.bodies.size() << std::endl;
-      // In addition to the above quantities you may want to track maximum
-      // velocity and smallest distanceance between masses. This is particularly
-      // useful when implementing collisions.
-    }
+      const int aliveNow = countAlive(nbs.bodies);
+      std::cout << "Plot next snapshot"
+                << ",\t t=" << t
+                << ",\t dt=" << nbs.dt
+                << ",\t alive=" << aliveNow
+                << ",\t merges=" << totalMerges
+                << std::endl;
+        }
   }
 
   closePVDFile();
