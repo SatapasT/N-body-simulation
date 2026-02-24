@@ -1,3 +1,18 @@
+benchmark_plots/
+*.png
+
+venv/
+__pycache__/
+*.pyc
+
+*.png
+*.pdf
+
+bench_output/
+bench_*.csv
+
+paraview-output/
+
 /paraview-output
 
 # Prerequisites
