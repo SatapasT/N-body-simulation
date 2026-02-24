@@ -19,10 +19,8 @@ else
   VECINFO :=
 endif
 
-# Vectorisation ON
 VEC_ON  := -ftree-vectorize $(VECINFO)
 
-# Vectorisation OFF (for scalar comparison)
 VEC_OFF := -fno-tree-vectorize
 
 OMP_ON := -fopenmp
@@ -30,7 +28,6 @@ OMP_ON := -fopenmp
 # Headers
 DEPS := IO.h NBodySimulation.h
 
-# Load GCC module automatically on Hamilton
 ifeq ($(shell command -v module 2>/dev/null),)
   MODULE_CMD :=
 else

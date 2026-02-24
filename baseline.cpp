@@ -137,20 +137,14 @@ int main(int argc, char **argv) {
 
       const double invMass = 1.0 / nbs.bodies[i].mass;
 
-
-      // store old velocity (needed for explicit Euler position update)
       const double v0x = nbs.bodies[i].v[0];
       const double v0y = nbs.bodies[i].v[1];
       const double v0z = nbs.bodies[i].v[2];
 
-
-      // v^{n+1} = v^n + (F^n/m) dt
       nbs.bodies[i].v[0] = v0x + nbs.dt * forceX[i] * invMass;
       nbs.bodies[i].v[1] = v0y + nbs.dt * forceY[i] * invMass;
       nbs.bodies[i].v[2] = v0z + nbs.dt * forceZ[i] * invMass;
 
-
-      // r^{n+1} = r^n + v^n dt   (USE OLD v)
       nbs.bodies[i].x[0] += nbs.dt * v0x;
       nbs.bodies[i].x[1] += nbs.dt * v0y;
       nbs.bodies[i].x[2] += nbs.dt * v0z;
@@ -158,7 +152,7 @@ int main(int argc, char **argv) {
 
 
     // ===============================
-    // Collision Handling (stable indices; no erase)
+    // Collision Handling
     // ===============================
     {
       const double C = 1e-2 / static_cast<double>(N0);

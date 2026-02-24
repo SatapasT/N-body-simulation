@@ -154,7 +154,6 @@ run_one () {
     med=$(median_of_list "${times[*]}")
     echo "${med}"
 
-    # save outputs only for ref@1 and full@max threads (optional)
     local save_outputs=0
     local max_thread="${THREADS[-1]}"
 
