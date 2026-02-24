@@ -1,15 +1,19 @@
 #include "IO.h"
 #include "NBodySimulation.h"
+
+#include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <iostream>
+#include <unordered_map>
 #include <vector>
 #include <omp.h>
-#include <algorithm>
 
 namespace fs = std::filesystem;
 
-void directoryExists(const std::string &dirPath) {
+static void directoryExists(const std::string &dirPath) {
   if (!fs::exists(dirPath)) {
     if (fs::create_directory(dirPath)) {
       std::cout << "Created directory: " << dirPath << std::endl;
@@ -23,7 +27,7 @@ static inline bool isAlive(const Body& b) {
   return b.mass > 0.0;
 }
 
-static void mergeBodiesInPlace(std::vector<Body>& bodies, int i, int j) {
+static inline void mergeBodiesInPlace(std::vector<Body>& bodies, int i, int j) {
   const double mi = bodies[i].mass;
   const double mj = bodies[j].mass;
   const double m  = mi + mj;
@@ -38,205 +42,100 @@ static void mergeBodiesInPlace(std::vector<Body>& bodies, int i, int j) {
   bodies[j].v[0] = bodies[j].v[1] = bodies[j].v[2] = 0.0;
 }
 
+static inline int64_t floor_div_to_int(double x, double invCell) {
+  return static_cast<int64_t>(std::floor(x * invCell));
+}
+
+static inline uint64_t hash3i(int64_t a, int64_t b, int64_t c) {
+  auto mix = [](uint64_t x) {
+    x ^= x >> 33;
+    x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33;
+    x *= 0xc4ceb9fe1a85ec53ULL;
+    x ^= x >> 33;
+    return x;
+  };
+
+  uint64_t ua = mix(static_cast<uint64_t>(a) + 0x9e3779b97f4a7c15ULL);
+  uint64_t ub = mix(static_cast<uint64_t>(b) + 0xbf58476d1ce4e5b9ULL);
+  uint64_t uc = mix(static_cast<uint64_t>(c) + 0x94d049bb133111ebULL);
+
+  return ua ^ (ub << 1) ^ (uc << 2);
+}
+
 int main(int argc, char **argv) {
   if (argc != 2) {
     std::cerr << "Usage: " << argv[0] << " input_file.txt\n";
     return 1;
   }
+
   NBodySimulation nbs(argv[1]);
 
   directoryExists("paraview-output");
 
-  // Write initial snapshot
   openPVDFile();
   int snapshotCounter = 0;
   writeVTKSnapshot(nbs, snapshotCounter);
   addSnapshotToPVD(snapshotCounter);
 
-  // Initialise simulation at t = 0
   double t = 0.0;
   double nextPlotTime = nbs.tPlotDelta;
 
   const int N0 = static_cast<int>(nbs.bodies.size());
-
   long long totalMerges = 0;
-
-  auto countAlive = [&](const std::vector<Body>& bodies) {
-    int alive = 0;
-    for (const auto& b : bodies) if (b.mass > 0.0) ++alive;
-    return alive;
-  };
-
-  constexpr int BS = 256;               
-  const int NB = (N0 + BS - 1) / BS;     
-
-  std::vector<omp_lock_t> blockLocks(NB);
-  for (int b = 0; b < NB; ++b) omp_init_lock(&blockLocks[b]);
 
   std::vector<double> forceX(N0, 0.0);
   std::vector<double> forceY(N0, 0.0);
   std::vector<double> forceZ(N0, 0.0);
 
+  const double G    = 1.0;
+  const double eps2 = 1e-12;
+
+  const double C = 1e-2 / static_cast<double>(N0);
+
+  std::unordered_map<uint64_t, std::vector<int>> grid;
+  grid.reserve(static_cast<size_t>(N0) * 2);
+
   while (t < nbs.tFinal) {
-    const double G    = 1.0;
-    const double eps2 = 1e-12;
 
-    std::fill(forceX.begin(), forceX.end(), 0.0);
-    std::fill(forceY.begin(), forceY.end(), 0.0);
-    std::fill(forceZ.begin(), forceZ.end(), 0.0);
-
-    // ============================================================
-    // Forces + Veclocity/Position
-    // ============================================================
-    #pragma omp parallel
-    {
-      std::vector<double> fx_i(BS), fy_i(BS), fz_i(BS);
-      std::vector<double> fx_j(BS), fy_j(BS), fz_j(BS);
-
-      #pragma omp for collapse(2) schedule(static)
-      for (int bi = 0; bi < NB; ++bi) {
-        for (int bj = 0; bj < NB; ++bj) {
-          if (bj < bi) continue;
-
-          const int i0 = bi * BS;
-          const int i1 = std::min(i0 + BS, N0);
-          const int j0 = bj * BS;
-          const int j1 = std::min(j0 + BS, N0);
-
-          const int ni = i1 - i0;
-          const int nj = j1 - j0;
-
-          std::fill(fx_i.begin(), fx_i.begin() + ni, 0.0);
-          std::fill(fy_i.begin(), fy_i.begin() + ni, 0.0);
-          std::fill(fz_i.begin(), fz_i.begin() + ni, 0.0);
-
-          std::fill(fx_j.begin(), fx_j.begin() + nj, 0.0);
-          std::fill(fy_j.begin(), fy_j.begin() + nj, 0.0);
-          std::fill(fz_j.begin(), fz_j.begin() + nj, 0.0);
-
-          if (bi == bj) {
-            for (int ii = 0; ii < ni; ++ii) {
-              const int i = i0 + ii;
-              if (!isAlive(nbs.bodies[i])) continue;
-
-              const double xi = nbs.bodies[i].x[0];
-              const double yi = nbs.bodies[i].x[1];
-              const double zi = nbs.bodies[i].x[2];
-              const double mi = nbs.bodies[i].mass;
-
-              #pragma omp simd
-              for (int jj = ii + 1; jj < nj; ++jj) {
-                const int j = j0 + jj;
-
-                const double mj = nbs.bodies[j].mass;
-                const double alive = (mj > 0.0) ? 1.0 : 0.0;
-
-                const double dx = nbs.bodies[j].x[0] - xi;
-                const double dy = nbs.bodies[j].x[1] - yi;
-                const double dz = nbs.bodies[j].x[2] - zi;
-
-                const double r2    = dx*dx + dy*dy + dz*dz + eps2;
-                const double invR  = 1.0 / std::sqrt(r2);
-                const double invR3 = invR * invR * invR;
-
-                const double s  = alive * (G * mi * mj * invR3);
-
-                const double fx = s * dx;
-                const double fy = s * dy;
-                const double fz = s * dz;
-
-                fx_i[ii] += fx;  fy_i[ii] += fy;  fz_i[ii] += fz;
-                fx_j[jj] -= fx;  fy_j[jj] -= fy;  fz_j[jj] -= fz;
-              }
-            }
-
-            omp_set_lock(&blockLocks[bi]);
-            for (int k = 0; k < ni; ++k) {
-              const int idx = i0 + k;
-              forceX[idx] += fx_i[k] + fx_j[k];
-              forceY[idx] += fy_i[k] + fy_j[k];
-              forceZ[idx] += fz_i[k] + fz_j[k];
-            }
-            omp_unset_lock(&blockLocks[bi]);
-
-          } else {
-            for (int ii = 0; ii < ni; ++ii) {
-              const int i = i0 + ii;
-              if (!isAlive(nbs.bodies[i])) continue;
-
-              const double xi = nbs.bodies[i].x[0];
-              const double yi = nbs.bodies[i].x[1];
-              const double zi = nbs.bodies[i].x[2];
-              const double mi = nbs.bodies[i].mass;
-
-              #pragma omp simd
-              for (int jj = 0; jj < nj; ++jj) {
-                const int j = j0 + jj;
-
-                const double mj = nbs.bodies[j].mass;
-                const double alive = (mj > 0.0) ? 1.0 : 0.0;
-
-                const double dx = nbs.bodies[j].x[0] - xi;
-                const double dy = nbs.bodies[j].x[1] - yi;
-                const double dz = nbs.bodies[j].x[2] - zi;
-
-                const double r2    = dx*dx + dy*dy + dz*dz + eps2;
-                const double invR  = 1.0 / std::sqrt(r2);
-                const double invR3 = invR * invR * invR;
-
-                const double s  = alive * (G * mi * mj * invR3);
-
-                const double fx = s * dx;
-                const double fy = s * dy;
-                const double fz = s * dz;
-
-                fx_i[ii] += fx;  fy_i[ii] += fy;  fz_i[ii] += fz;
-                fx_j[jj] -= fx;  fy_j[jj] -= fy;  fz_j[jj] -= fz;
-              }
-            }
-
-            if (bi < bj) {
-              omp_set_lock(&blockLocks[bi]);
-              omp_set_lock(&blockLocks[bj]);
-
-              for (int k = 0; k < ni; ++k) {
-                const int idx = i0 + k;
-                forceX[idx] += fx_i[k];
-                forceY[idx] += fy_i[k];
-                forceZ[idx] += fz_i[k];
-              }
-              for (int k = 0; k < nj; ++k) {
-                const int idx = j0 + k;
-                forceX[idx] += fx_j[k];
-                forceY[idx] += fy_j[k];
-                forceZ[idx] += fz_j[k];
-              }
-
-              omp_unset_lock(&blockLocks[bj]);
-              omp_unset_lock(&blockLocks[bi]);
-            } else {
-              omp_set_lock(&blockLocks[bj]);
-              omp_set_lock(&blockLocks[bi]);
-
-              for (int k = 0; k < ni; ++k) {
-                const int idx = i0 + k;
-                forceX[idx] += fx_i[k];
-                forceY[idx] += fy_i[k];
-                forceZ[idx] += fz_i[k];
-              }
-              for (int k = 0; k < nj; ++k) {
-                const int idx = j0 + k;
-                forceX[idx] += fx_j[k];
-                forceY[idx] += fy_j[k];
-                forceZ[idx] += fz_j[k];
-              }
-
-              omp_unset_lock(&blockLocks[bi]);
-              omp_unset_lock(&blockLocks[bj]);
-            }
-          }
-        }
+    #pragma omp parallel for schedule(static)
+    for (int i = 0; i < N0; ++i) {
+      if (!isAlive(nbs.bodies[i])) {
+        forceX[i] = forceY[i] = forceZ[i] = 0.0;
+        continue;
       }
+
+      const double xi = nbs.bodies[i].x[0];
+      const double yi = nbs.bodies[i].x[1];
+      const double zi = nbs.bodies[i].x[2];
+      const double mi = nbs.bodies[i].mass;
+
+      double fx = 0.0, fy = 0.0, fz = 0.0;
+
+      #pragma omp simd reduction(+:fx,fy,fz)
+      for (int j = 0; j < N0; ++j) {
+        if (j == i) continue;
+        const double mj = nbs.bodies[j].mass;
+        if (mj <= 0.0) continue;
+
+        const double dx = nbs.bodies[j].x[0] - xi;
+        const double dy = nbs.bodies[j].x[1] - yi;
+        const double dz = nbs.bodies[j].x[2] - zi;
+
+        const double r2    = dx*dx + dy*dy + dz*dz + eps2;
+        const double invR  = 1.0 / std::sqrt(r2);
+        const double invR3 = invR * invR * invR;
+
+        const double s = (G * mi * mj * invR3);
+
+        fx += s * dx;
+        fy += s * dy;
+        fz += s * dz;
+      }
+
+      forceX[i] = fx;
+      forceY[i] = fy;
+      forceZ[i] = fz;
     }
 
     #pragma omp parallel for schedule(static)
@@ -258,34 +157,74 @@ int main(int argc, char **argv) {
       nbs.bodies[i].x[2] += nbs.dt * v0z;
     }
 
-    // ============================================================
-    // COLLISIONS
-    // ============================================================
-    {
-      const double C = 1e-2 / static_cast<double>(N0);
+    bool merged = true;
+    while (merged) {
+      merged = false;
 
-      bool merged = true;
-      while (merged) {
-        merged = false;
+      double mmax = 0.0;
+      for (int i = 0; i < N0; ++i) {
+        if (nbs.bodies[i].mass > mmax) mmax = nbs.bodies[i].mass;
+      }
+      double maxR = C * (mmax + mmax);
 
-        for (int i = 0; i < N0 && !merged; ++i) {
-          if (!isAlive(nbs.bodies[i])) continue;
+      if (maxR <= 0.0) break;
 
-          for (int j = i + 1; j < N0 && !merged; ++j) {
-            if (!isAlive(nbs.bodies[j])) continue;
+      grid.clear();
+      const double invCell = 1.0 / maxR;
 
-            const double dx = nbs.bodies[j].x[0] - nbs.bodies[i].x[0];
-            const double dy = nbs.bodies[j].x[1] - nbs.bodies[i].x[1];
-            const double dz = nbs.bodies[j].x[2] - nbs.bodies[i].x[2];
+      for (int i = 0; i < N0; ++i) {
+        if (!isAlive(nbs.bodies[i])) continue;
 
-            const double dist2   = dx*dx + dy*dy + dz*dz;
-            const double thresh  = C * (nbs.bodies[i].mass + nbs.bodies[j].mass);
-            const double thresh2 = thresh * thresh;
+        const int64_t cx = floor_div_to_int(nbs.bodies[i].x[0], invCell);
+        const int64_t cy = floor_div_to_int(nbs.bodies[i].x[1], invCell);
+        const int64_t cz = floor_div_to_int(nbs.bodies[i].x[2], invCell);
 
-            if (dist2 <= thresh2) {
-              mergeBodiesInPlace(nbs.bodies, i, j);
-              ++totalMerges;
-              merged = true;
+        const uint64_t key = hash3i(cx, cy, cz);
+        grid[key].push_back(i);
+      }
+
+      for (int i = 0; i < N0 && !merged; ++i) {
+        if (!isAlive(nbs.bodies[i])) continue;
+
+        const double xi = nbs.bodies[i].x[0];
+        const double yi = nbs.bodies[i].x[1];
+        const double zi = nbs.bodies[i].x[2];
+        const double mi = nbs.bodies[i].mass;
+
+        const int64_t cx = floor_div_to_int(xi, invCell);
+        const int64_t cy = floor_div_to_int(yi, invCell);
+        const int64_t cz = floor_div_to_int(zi, invCell);
+
+        // Check own cell + 26 neighbours
+        for (int dz = -1; dz <= 1 && !merged; ++dz) {
+          for (int dy = -1; dy <= 1 && !merged; ++dy) {
+            for (int dx = -1; dx <= 1 && !merged; ++dx) {
+              const uint64_t key = hash3i(cx + dx, cy + dy, cz + dz);
+              auto it = grid.find(key);
+              if (it == grid.end()) continue;
+
+              const auto& candidates = it->second;
+              for (int idx = 0; idx < (int)candidates.size() && !merged; ++idx) {
+                const int j = candidates[idx];
+                if (j <= i) continue;                 // preserve (i<j) ordering
+                if (!isAlive(nbs.bodies[j])) continue;
+
+                const double mj = nbs.bodies[j].mass;
+
+                const double dxp = nbs.bodies[j].x[0] - xi;
+                const double dyp = nbs.bodies[j].x[1] - yi;
+                const double dzp = nbs.bodies[j].x[2] - zi;
+
+                const double dist2   = dxp*dxp + dyp*dyp + dzp*dzp;
+                const double thresh  = C * (mi + mj);
+                const double thresh2 = thresh * thresh;
+
+                if (dist2 <= thresh2) {
+                  mergeBodiesInPlace(nbs.bodies, i, j);
+                  ++totalMerges;
+                  merged = true;
+                }
+              }
             }
           }
         }
@@ -299,20 +238,10 @@ int main(int argc, char **argv) {
       writeVTKSnapshot(nbs, snapshotCounter);
       addSnapshotToPVD(snapshotCounter);
       nextPlotTime += nbs.tPlotDelta;
-
-      const int aliveNow = countAlive(nbs.bodies);
-      std::cout << "Plot next snapshot"
-                << ",\t t=" << t
-                << ",\t dt=" << nbs.dt
-                << ",\t alive=" << aliveNow
-                << ",\t merges=" << totalMerges
-                << std::endl;
     }
   }
 
-  for (int b = 0; b < NB; ++b) omp_destroy_lock(&blockLocks[b]);
   closePVDFile();
   std::cout << "Simulation completed.\n";
-
   return 0;
 }
