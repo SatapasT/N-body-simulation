@@ -14,13 +14,13 @@ module purge
 module load gcc/12.2
 
 echo "======================================"
-echo "Job ID:     ${SLURM_JOB_ID}"
-echo "Node(s):    ${SLURM_NODELIST}"
-echo "CPUs:       ${SLURM_CPUS_PER_TASK}"
-echo "Work dir:   $(pwd)"
-echo "TMPDIR:     ${TMPDIR:-<none>}"
-echo "SLURM_TMPDIR: ${SLURM_TMPDIR:-<none>}"
-echo "Start time: $(date)"
+echo "Job ID:        ${SLURM_JOB_ID}"
+echo "Node(s):       ${SLURM_NODELIST}"
+echo "CPUs:          ${SLURM_CPUS_PER_TASK}"
+echo "Work dir:      $(pwd)"
+echo "TMPDIR:        ${TMPDIR:-<none>}"
+echo "SLURM_TMPDIR:  ${SLURM_TMPDIR:-<none>}"
+echo "Start time:    $(date)"
 echo "======================================"
 
 export OMP_PROC_BIND=spread
@@ -31,8 +31,8 @@ export OMP_PLACES=cores
 TMP_BASE="${SLURM_TMPDIR:-${TMPDIR:-/tmp}}"
 SCRATCH_DIR="$(mktemp -d "${TMP_BASE}/nbody_${SLURM_JOB_ID}_XXXXXX")"
 
-echo "Scratch base: ${TMP_BASE}"
-echo "Scratch dir:  ${SCRATCH_DIR}"
+echo "Scratch base:  ${TMP_BASE}"
+echo "Scratch dir:   ${SCRATCH_DIR}"
 
 cleanup() { rm -rf "${SCRATCH_DIR}" 2>/dev/null || true; }
 trap cleanup EXIT
@@ -49,8 +49,8 @@ INPUTS=(
   "input_5000.txt"
 )
 
-# ONLY 1, 8, 16 (as requested)
-THREADS=(1 8 16)
+# NOW: 1,2,4,8,16 (as requested)
+THREADS=(1 2 4 8 16)
 
 # Report-quality numbers:
 REPEATS=3      # median-of-3
@@ -64,7 +64,7 @@ COPY_BACK_MODE="lite"
 
 # Save tiny paraview outputs ONLY for these configs:
 SAVE_BASELINE_OUTPUTS=1      # baseline@1
-SAVE_FULL_MAX_OUTPUTS=1      # full@max threads in THREADS array (here 16)
+SAVE_FULL_MAX_OUTPUTS=1      # full@max thread in THREADS array (here 16)
 
 # Where to store results in $HOME
 OUTROOT="bench_output"
@@ -92,7 +92,6 @@ done
 
 # median helper
 median_of_list () {
-  # usage: median_of_list "1.2 2.3 0.9"
   local xs=($1)
   local n=${#xs[@]}
   if (( n == 0 )); then echo ""; return 0; fi
@@ -211,7 +210,7 @@ echo "  - warmup:  ${WARMUP} (ignored)"
 echo "  - outputs: COPY_BACK_MODE=${COPY_BACK_MODE} (only baseline@1 and full@${THREADS[-1]})"
 echo
 
-# main loop (don’t hard-fail job on one scenario; record NA)
+# main loop
 for input in "${INPUTS[@]}"; do
   if [[ ! -f "${input}" ]]; then
     echo "ERROR: Missing input file: ${input}"
@@ -233,7 +232,7 @@ for input in "${INPUTS[@]}"; do
     echo "baseline (1 thread): FAILED"
   fi
 
-  # full @ threads (1,8,16)
+  # full @ threads (1,2,4,8,16)
   for th in "${THREADS[@]}"; do
     if (( th > SLURM_CPUS_PER_TASK )); then
       continue

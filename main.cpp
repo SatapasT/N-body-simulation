@@ -195,7 +195,6 @@ int main(int argc, char **argv) {
         const int64_t cy = floor_div_to_int(yi, invCell);
         const int64_t cz = floor_div_to_int(zi, invCell);
 
-        // Check own cell + 26 neighbours
         for (int dz = -1; dz <= 1 && !merged; ++dz) {
           for (int dy = -1; dy <= 1 && !merged; ++dy) {
             for (int dx = -1; dx <= 1 && !merged; ++dx) {
@@ -206,7 +205,7 @@ int main(int argc, char **argv) {
               const auto& candidates = it->second;
               for (int idx = 0; idx < (int)candidates.size() && !merged; ++idx) {
                 const int j = candidates[idx];
-                if (j <= i) continue;                 // preserve (i<j) ordering
+                if (j <= i) continue;
                 if (!isAlive(nbs.bodies[j])) continue;
 
                 const double mj = nbs.bodies[j].mass;
